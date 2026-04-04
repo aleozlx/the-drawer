@@ -262,13 +262,15 @@ const oauthConfig = {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       const url = new URL(request.url);
 
-      // OAuth authorize: auto-approve all requests
+      // OAuth authorize: require Access JWT, then auto-approve
       if (url.pathname === "/authorize") {
+        const user = await validateAccessJWT(request, env);
+        if (!user) return new Response("Unauthorized — Cloudflare Access login required", { status: 401 });
         const oauthApi: OAuthHelpers = getOAuthApi(_oauthOptions, env);
         const authRequest = await oauthApi.parseAuthRequest(request);
         const { redirectTo } = await oauthApi.completeAuthorization({
           request: authRequest,
-          userId: "drawer-user",
+          userId: user,
           metadata: {},
           scope: authRequest.scope,
           props: {},
