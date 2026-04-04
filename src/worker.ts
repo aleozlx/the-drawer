@@ -8,6 +8,7 @@ import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 interface Env {
   DRAWER_KV: KVNamespace;
   OAUTH_KV: KVNamespace;
+  ASSETS: Fetcher;
 }
 
 interface Entry {
@@ -44,9 +45,30 @@ function generateId(): string {
   return "e_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// ─── Storage API handler ───
+
+async function handleStorageRequest(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/api\/storage\/(.+)$/);
+  if (!match) return null;
+
+  const key = decodeURIComponent(match[1]);
+
+  if (request.method === "GET") {
+    const value = await env.DRAWER_KV.get(key);
+    return Response.json({ value });
+  }
+
+  if (request.method === "PUT") {
+    const { value } = await request.json() as { value: string };
+    await env.DRAWER_KV.put(key, value);
+    return Response.json({ ok: true });
+  }
+
+  return new Response("Method not allowed", { status: 405 });
+}
+
 // ─── MCP Server ───
-// We use a module-level KV reference that gets set on each request.
-// This is safe because Workers handle one request at a time per isolate.
 
 let _kv: KVNamespace;
 
@@ -145,10 +167,23 @@ function buildServer(): McpServer {
   return server;
 }
 
-const server = buildServer();
-const mcpHandler = createMcpHandler(server);
+const mcpServer = buildServer();
+const mcpHandler = createMcpHandler(mcpServer);
 
-// ─── OAuth + Export ───
+// ─── Default handler (storage API + static assets) ───
+
+const defaultHandler: ExportedHandler<Env> = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    // Storage API
+    const storageResponse = await handleStorageRequest(request, env);
+    if (storageResponse) return storageResponse;
+
+    // Static assets (Vite build)
+    return env.ASSETS.fetch(request);
+  },
+};
+
+// ─── OAuth wrapping MCP, with default handler for everything else ───
 
 export default new OAuthProvider<Env>({
   apiRoute: "/mcp",
@@ -158,11 +193,7 @@ export default new OAuthProvider<Env>({
       return mcpHandler(request, env, ctx);
     },
   },
-  defaultHandler: {
-    async fetch(request: Request) {
-      return new Response("The Drawer MCP Server", { status: 200 });
-    },
-  },
+  defaultHandler,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
