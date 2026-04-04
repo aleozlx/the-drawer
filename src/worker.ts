@@ -9,6 +9,8 @@ interface Env {
   DRAWER_KV: KVNamespace;
   OAUTH_KV: KVNamespace;
   ASSETS: Fetcher;
+  CF_ACCESS_TEAM: string;
+  CF_ACCESS_AUD: string;
 }
 
 interface Entry {
@@ -66,6 +68,79 @@ async function handleStorageRequest(request: Request, env: Env): Promise<Respons
   }
 
   return new Response("Method not allowed", { status: 405 });
+}
+
+// ─── Cloudflare Access JWT validation ───
+
+let _jwksCache: { keys: JsonWebKey[]; fetchedAt: number } | null = null;
+const JWKS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function getAccessJWKS(team: string): Promise<JsonWebKey[]> {
+  if (_jwksCache && Date.now() - _jwksCache.fetchedAt < JWKS_TTL_MS) {
+    return _jwksCache.keys;
+  }
+  const res = await fetch(`https://${team}.cloudflareaccess.com/cdn-cgi/access/certs`);
+  if (!res.ok) throw new Error("Failed to fetch Access JWKS");
+  const data = await res.json() as { keys: JsonWebKey[] };
+  _jwksCache = { keys: data.keys, fetchedAt: Date.now() };
+  return data.keys;
+}
+
+function base64UrlDecode(str: string): Uint8Array {
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function validateAccessJWT(request: Request, env: Env): Promise<string | null> {
+  if (!env.CF_ACCESS_TEAM || !env.CF_ACCESS_AUD) return null;
+
+  // Extract token from header or cookie
+  let token = request.headers.get("Cf-Access-Jwt-Assertion");
+  if (!token) {
+    const cookie = request.headers.get("Cookie") || "";
+    const match = cookie.match(/CF_Authorization=([^;]+)/);
+    token = match ? match[1] : null;
+  }
+  if (!token) return null;
+
+  try {
+    // Decode header and payload without verification first
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const header = JSON.parse(new TextDecoder().decode(base64UrlDecode(parts[0])));
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(parts[1])));
+
+    // Verify audience
+    const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!aud.includes(env.CF_ACCESS_AUD)) return null;
+
+    // Verify expiry
+    if (payload.exp && payload.exp < Date.now() / 1000) return null;
+
+    // Verify signature using JWKS
+    const keys = await getAccessJWKS(env.CF_ACCESS_TEAM);
+    const jwk = keys.find((k: any) => k.kid === header.kid);
+    if (!jwk) return null;
+
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    const signatureBytes = base64UrlDecode(parts[2]);
+    const dataBytes = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+    const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes);
+
+    return valid ? (payload.email || payload.sub || "authenticated") : null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── MCP Server ───
@@ -201,9 +276,13 @@ const oauthConfig = {
         return Response.redirect(redirectTo, 302);
       }
 
-      // Storage API
-      const storageResponse = await handleStorageRequest(request, env);
-      if (storageResponse) return storageResponse;
+      // Storage API (protected by Access JWT)
+      if (url.pathname.startsWith("/api/storage/")) {
+        const user = await validateAccessJWT(request, env);
+        if (!user) return new Response("Unauthorized", { status: 401 });
+        const storageResponse = await handleStorageRequest(request, env);
+        if (storageResponse) return storageResponse;
+      }
 
       // Static assets (Vite build)
       if (env.ASSETS) return env.ASSETS.fetch(request);
