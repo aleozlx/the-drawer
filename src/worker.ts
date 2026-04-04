@@ -167,9 +167,6 @@ function buildServer(): McpServer {
   return server;
 }
 
-const mcpServer = buildServer();
-const mcpHandler = createMcpHandler(mcpServer);
-
 // ─── OAuth provider ───
 
 // Store the full options so getOAuthApi can access them from defaultHandler
@@ -180,7 +177,10 @@ const oauthConfig = {
   apiHandler: {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       _kv = env.DRAWER_KV;
-      return mcpHandler(request, env, ctx);
+      // Create a fresh McpServer per request (stateless handler requirement)
+      const server = buildServer();
+      const handler = createMcpHandler(server);
+      return handler(request, env, ctx);
     },
   },
   defaultHandler: {
