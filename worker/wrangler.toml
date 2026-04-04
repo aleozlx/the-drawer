@@ -1,0 +1,21 @@
+name = "the-drawer-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "DRAWER_KV"
+id = "<your-drawer-kv-id>"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "<your-oauth-kv-id>"
+
+[durable_objects]
+bindings = [
+  { name = "DrawerMcpAgent", class_name = "DrawerMcpAgent" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DrawerMcpAgent"]
