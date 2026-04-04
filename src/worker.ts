@@ -1,7 +1,7 @@
 import { createMcpHandler } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
+import { OAuthProvider, getOAuthApi, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 // ─── Types ───
 
@@ -170,31 +170,48 @@ function buildServer(): McpServer {
 const mcpServer = buildServer();
 const mcpHandler = createMcpHandler(mcpServer);
 
-// ─── Default handler (storage API + static assets) ───
+// ─── OAuth provider ───
 
-const defaultHandler: ExportedHandler<Env> = {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    // Storage API
-    const storageResponse = await handleStorageRequest(request, env);
-    if (storageResponse) return storageResponse;
-
-    // Static assets (Vite build)
-    return env.ASSETS.fetch(request);
-  },
+// Partial config without defaultHandler (to avoid circular reference in getOAuthApi)
+const oauthBaseOptions = {
+  apiRoute: "/mcp" as const,
+  authorizeEndpoint: "/authorize" as const,
+  tokenEndpoint: "/token" as const,
+  clientRegistrationEndpoint: "/register" as const,
 };
 
-// ─── OAuth wrapping MCP, with default handler for everything else ───
-
 export default new OAuthProvider<Env>({
-  apiRoute: "/mcp",
+  ...oauthBaseOptions,
   apiHandler: {
-    async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       _kv = env.DRAWER_KV;
       return mcpHandler(request, env, ctx);
     },
   },
-  defaultHandler,
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
+  defaultHandler: {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+      const url = new URL(request.url);
+
+      // OAuth authorize: auto-approve all requests
+      if (url.pathname === "/authorize") {
+        const oauthApi: OAuthHelpers = getOAuthApi(oauthBaseOptions as any, env);
+        const authRequest = await oauthApi.parseAuthRequest(request);
+        const { redirectTo } = await oauthApi.completeAuthorization({
+          request: authRequest,
+          userId: "drawer-user",
+          metadata: {},
+          scope: authRequest.scope,
+          props: {},
+        });
+        return Response.redirect(redirectTo, 302);
+      }
+
+      // Storage API
+      const storageResponse = await handleStorageRequest(request, env);
+      if (storageResponse) return storageResponse;
+
+      // Static assets (Vite build)
+      return env.ASSETS.fetch(request);
+    },
+  },
 });
