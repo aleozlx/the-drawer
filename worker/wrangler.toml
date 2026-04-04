@@ -10,12 +10,3 @@ id = "<your-drawer-kv-id>"
 [[kv_namespaces]]
 binding = "OAUTH_KV"
 id = "<your-oauth-kv-id>"
-
-[durable_objects]
-bindings = [
-  { name = "DrawerMcpAgent", class_name = "DrawerMcpAgent" }
-]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["DrawerMcpAgent"]

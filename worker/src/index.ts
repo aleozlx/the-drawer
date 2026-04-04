@@ -1,17 +1,13 @@
-import { McpAgent } from "agents/mcp";
+import { createMcpHandler } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import {
-  OAuthProvider,
-  type OAuthHelpers,
-} from "@cloudflare/workers-oauth-provider";
+import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 
 // ─── Types ───
 
 interface Env {
   DRAWER_KV: KVNamespace;
   OAUTH_KV: KVNamespace;
-  DrawerMcpAgent: DurableObjectNamespace;
 }
 
 interface Entry {
@@ -28,7 +24,7 @@ interface DrawerData {
   order: string[];
 }
 
-// ─���─ Constants ───
+// ─── Constants ───
 
 const STORAGE_KEY = "claude-drawer:entries";
 const EMPTY_STATE: DrawerData = { entries: {}, order: [] };
@@ -48,118 +44,123 @@ function generateId(): string {
   return "e_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-// ─── MCP Agent ───
+// ─── MCP Server ───
+// We use a module-level KV reference that gets set on each request.
+// This is safe because Workers handle one request at a time per isolate.
 
-export class DrawerMcpAgent extends McpAgent<Env> {
-  server = new McpServer({
+let _kv: KVNamespace;
+
+function buildServer(): McpServer {
+  const server = new McpServer({
     name: "the-drawer",
     version: "1.0.0",
   });
 
-  async init() {
-    this.server.tool(
-      "add_entry",
-      "Add a new entry to The Drawer",
-      {
-        title: z.string().describe("Entry title"),
-        body: z.string().describe("Entry body text"),
-        tags: z.array(z.string()).optional().describe("Optional tags"),
-        origin: z.string().optional().describe("Optional origin/source note"),
-      },
-      async ({ title, body, tags, origin }) => {
-        const kv = this.env.DRAWER_KV;
-        const data = await loadData(kv);
-        const id = generateId();
-        const entry: Entry = {
-          id,
-          title,
-          body,
-          date: new Date().toISOString().slice(0, 10),
-          tags: tags || [],
-          origin: origin || null,
-        };
-        data.entries[id] = entry;
-        data.order.unshift(id);
-        await saveData(kv, data);
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }],
-        };
-      }
-    );
+  server.tool(
+    "add_entry",
+    "Add a new entry to The Drawer",
+    {
+      title: z.string().describe("Entry title"),
+      body: z.string().describe("Entry body text"),
+      tags: z.array(z.string()).optional().describe("Optional tags"),
+      origin: z.string().optional().describe("Optional origin/source note"),
+    },
+    async ({ title, body, tags, origin }) => {
+      const data = await loadData(_kv);
+      const id = generateId();
+      const entry: Entry = {
+        id,
+        title,
+        body,
+        date: new Date().toISOString().slice(0, 10),
+        tags: tags || [],
+        origin: origin || null,
+      };
+      data.entries[id] = entry;
+      data.order.unshift(id);
+      await saveData(_kv, data);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }],
+      };
+    }
+  );
 
-    this.server.tool(
-      "search_entries",
-      "Search entries in The Drawer by keyword. Searches titles, bodies, tags, and origins.",
-      {
-        query: z.string().describe("Search query"),
-      },
-      async ({ query }) => {
-        const kv = this.env.DRAWER_KV;
-        const data = await loadData(kv);
-        const q = query.toLowerCase();
-        const results = data.order
-          .map((id) => data.entries[id])
-          .filter(
-            (e) =>
-              e.title.toLowerCase().includes(q) ||
-              e.body.toLowerCase().includes(q) ||
-              e.tags?.some((t) => t.toLowerCase().includes(q)) ||
-              (e.origin || "").toLowerCase().includes(q)
-          );
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: results.length
-                ? JSON.stringify(results, null, 2)
-                : `No entries matching "${query}"`,
-            },
-          ],
-        };
-      }
-    );
+  server.tool(
+    "search_entries",
+    "Search entries in The Drawer by keyword. Searches titles, bodies, tags, and origins.",
+    {
+      query: z.string().describe("Search query"),
+    },
+    async ({ query }) => {
+      const data = await loadData(_kv);
+      const q = query.toLowerCase();
+      const results = data.order
+        .map((id) => data.entries[id])
+        .filter(
+          (e) =>
+            e.title.toLowerCase().includes(q) ||
+            e.body.toLowerCase().includes(q) ||
+            e.tags?.some((t) => t.toLowerCase().includes(q)) ||
+            (e.origin || "").toLowerCase().includes(q)
+        );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: results.length
+              ? JSON.stringify(results, null, 2)
+              : `No entries matching "${query}"`,
+          },
+        ],
+      };
+    }
+  );
 
-    this.server.tool(
-      "list_entries",
-      "List entries in The Drawer, most recent first.",
-      {
-        limit: z.number().optional().describe("Max entries to return (default 20)"),
-      },
-      async ({ limit }) => {
-        const kv = this.env.DRAWER_KV;
-        const data = await loadData(kv);
-        const n = limit || 20;
-        const entries = data.order.slice(0, n).map((id) => {
-          const e = data.entries[id];
-          return { id: e.id, title: e.title, date: e.date, tags: e.tags };
-        });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: entries.length
-                ? JSON.stringify(entries, null, 2)
-                : "The Drawer is empty.",
-            },
-          ],
-        };
-      }
-    );
-  }
+  server.tool(
+    "list_entries",
+    "List entries in The Drawer, most recent first.",
+    {
+      limit: z.number().optional().describe("Max entries to return (default 20)"),
+    },
+    async ({ limit }) => {
+      const data = await loadData(_kv);
+      const n = limit || 20;
+      const entries = data.order.slice(0, n).map((id) => {
+        const e = data.entries[id];
+        return { id: e.id, title: e.title, date: e.date, tags: e.tags };
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: entries.length
+              ? JSON.stringify(entries, null, 2)
+              : "The Drawer is empty.",
+          },
+        ],
+      };
+    }
+  );
+
+  return server;
 }
+
+const server = buildServer();
+const mcpHandler = createMcpHandler(server);
 
 // ─── OAuth + Export ───
 
-export default new OAuthProvider({
+export default new OAuthProvider<Env>({
   apiRoute: "/mcp",
-  apiHandler: DrawerMcpAgent.serve("/mcp"),
+  apiHandler: {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+      _kv = env.DRAWER_KV;
+      return mcpHandler(request, env, ctx);
+    },
+  },
   defaultHandler: {
     async fetch(request: Request) {
-      const url = new URL(request.url);
-      if (url.pathname === "/") {
-        return new Response("The Drawer MCP Server", { status: 200 });
-      }
-      return new Response("Not found", { status: 404 });
+      return new Response("The Drawer MCP Server", { status: 200 });
     },
   },
   authorizeEndpoint: "/authorize",
