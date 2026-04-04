@@ -172,16 +172,11 @@ const mcpHandler = createMcpHandler(mcpServer);
 
 // ─── OAuth provider ───
 
-// Partial config without defaultHandler (to avoid circular reference in getOAuthApi)
-const oauthBaseOptions = {
-  apiRoute: "/mcp" as const,
-  authorizeEndpoint: "/authorize" as const,
-  tokenEndpoint: "/token" as const,
-  clientRegistrationEndpoint: "/register" as const,
-};
+// Store the full options so getOAuthApi can access them from defaultHandler
+let _oauthOptions: any;
 
-export default new OAuthProvider<Env>({
-  ...oauthBaseOptions,
+const oauthConfig = {
+  apiRoute: "/mcp",
   apiHandler: {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       _kv = env.DRAWER_KV;
@@ -194,7 +189,7 @@ export default new OAuthProvider<Env>({
 
       // OAuth authorize: auto-approve all requests
       if (url.pathname === "/authorize") {
-        const oauthApi: OAuthHelpers = getOAuthApi(oauthBaseOptions as any, env);
+        const oauthApi: OAuthHelpers = getOAuthApi(_oauthOptions, env);
         const authRequest = await oauthApi.parseAuthRequest(request);
         const { redirectTo } = await oauthApi.completeAuthorization({
           request: authRequest,
@@ -211,7 +206,15 @@ export default new OAuthProvider<Env>({
       if (storageResponse) return storageResponse;
 
       // Static assets (Vite build)
-      return env.ASSETS.fetch(request);
+      if (env.ASSETS) return env.ASSETS.fetch(request);
+      return new Response("Not found", { status: 404 });
     },
   },
-});
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
+};
+
+_oauthOptions = oauthConfig;
+
+export default new OAuthProvider<Env>(oauthConfig);
