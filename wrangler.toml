@@ -15,5 +15,5 @@ binding = "OAUTH_KV"
 id = "b87600ea20374cb58c61c3dddbed68f6"
 
 [vars]
-CF_ACCESS_TEAM = "<your-team-name>"
-CF_ACCESS_AUD = "<your-application-audience-tag>"
+CF_ACCESS_TEAM = "aleozlx"
+CF_ACCESS_AUD = "e3fb9826-5420-402d-bf74-6d39dc09682b"
