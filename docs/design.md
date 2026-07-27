@@ -1,6 +1,6 @@
 ---
 name: design
-description: Overall design of The Drawer — architecture, data model, auth, tool surface, and the reasoning behind the decisions that are not visible in the code. Start here; the other docs in this directory are episodes in this doc's history.
+description: Overall design of The Drawer — architecture, data model, auth, tool surface, and the reasoning behind the decisions that are not visible in the code. Start here.
 ---
 
 # The Drawer — design
@@ -203,9 +203,11 @@ The server is one corner of a three-repo arrangement:
 - **`aleozlx/my_obsidian`** — the backup target: `Drawer/` with an authoritative
   append-only `index.jsonl` (the `.md` files are derived views; on disagreement the
   JSONL wins), keyed on `id`, never title.
-- **This repo** — `docs/backup-client-review.md` (the skill maintainer's review of
-  the surface) and `docs/backup-client-review-response.md` (the answers, including
-  the correction that `import_entry` replace *is* an edit path).
+- **This repo** — the surface was reviewed by the skill's maintainer and answered
+  point by point before the skill migrated to it; that exchange
+  (`backup-client-review.md` / `backup-client-review-response.md`) is preserved in
+  git history, and everything durable from it was folded into this doc and the tool
+  descriptions.
 
 One coupling to keep in mind: the backup skill historically inferred deletion from
 an id disappearing from `list_entries`. Under soft delete that inference goes
