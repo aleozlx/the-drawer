@@ -216,9 +216,13 @@ async function validateAccessJWT(request: Request, env: Env): Promise<string | n
 // ─── MCP Server ───
 
 let _kv: KVNamespace;
-let _allowImport = false;
 
-function buildServer(): McpServer {
+// `allowImport` decides whether import_entry is *registered at all*, not whether it
+// refuses when called. A restore path that is merely present-and-polite still shows
+// up in every client's tool list and only reveals the missing config at the moment
+// someone attempts a restore. Absence is the stronger guarantee, and it is legible
+// before it matters.
+function buildServer(allowImport: boolean): McpServer {
   const server = new McpServer({
     name: "the-drawer",
     version: "1.0.0",
@@ -346,12 +350,22 @@ function buildServer(): McpServer {
       "soft-deleted tombstones. For backups, call with no `since` — a full export is what " +
       "lets a backup detect edits, deletions, and drift, and the whole store is read into " +
       "memory on every call regardless, so `since` shrinks the response but saves no work. " +
-      "To skip an unchanged run cheaply, compare `store_revision` against the previous run's.",
+      "To skip an unchanged run cheaply, compare `store_revision` against the previous run's. " +
+      "Note that store_revision orders writes but does not guarantee they were atomic: the " +
+      "store is a single KV value updated by read-modify-write with no compare-and-set, so " +
+      "concurrent writers can still lose an entry. Treat it as a change marker, not a " +
+      "consistency proof. Tombstones originate in the web UI — nothing on this tool surface " +
+      "deletes an entry.",
     {
       since: z
         .string()
         .optional()
-        .describe("ISO timestamp; return only entries with updated_at > since. Omit for a full export (recommended for backups)."),
+        .describe(
+          "ISO timestamp; return only entries with updated_at > since. Omit for a full " +
+            "export (recommended for backups). Note there is no general update tool, so " +
+            "updated_at only moves on creation, soft-deletion, and import_entry replace — " +
+            "`since` cannot surface arbitrary body edits, because they are not possible."
+        ),
       cursor: z.string().optional().describe("Opaque cursor from a previous call's next_cursor."),
       limit: z.number().optional().describe("Max entries per page (default 100, max 500)."),
     },
@@ -408,11 +422,14 @@ function buildServer(): McpServer {
     }
   );
 
-  server.tool(
+  // Registered only when the server opts in, so a client can see that restore is
+  // unavailable by the tool's absence rather than by attempting one and failing.
+  if (allowImport) server.tool(
     "import_entry",
     "Restore a single entry with its original id and date preserved. This is the restore " +
-      "path, not the filing path — use add_entry for normal writing. Disabled unless the " +
-      "server sets DRAWER_ALLOW_IMPORT=1.",
+      "path, not the filing path — use add_entry for normal writing. Registered only " +
+      "because the server sets DRAWER_ALLOW_IMPORT=1. Note that on_conflict='replace' " +
+      "overwrites an existing body, which is the one edit path this surface has.",
     {
       id: z.string().describe("Original entry id. Must match the server's id grammar."),
       title: z.string(),
@@ -432,9 +449,6 @@ function buildServer(): McpServer {
         content: [{ type: "text" as const, text: JSON.stringify({ error: "import_rejected", message }) }],
       });
 
-      if (!_allowImport) {
-        return fail("import_entry is disabled. Set DRAWER_ALLOW_IMPORT=1 on the server to enable restores.");
-      }
       if (!ID_RE.test(id)) {
         return fail(`'${id}' is not a valid drawer id. Expected e_ followed by 10-16 base36 characters.`);
       }
@@ -499,9 +513,8 @@ const oauthConfig = {
   apiHandler: {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       _kv = env.DRAWER_KV;
-      _allowImport = env.DRAWER_ALLOW_IMPORT === "1";
       // Create a fresh McpServer per request (stateless handler requirement)
-      const server = buildServer();
+      const server = buildServer(env.DRAWER_ALLOW_IMPORT === "1");
       const handler = createMcpHandler(server);
       return handler(request, env, ctx);
     },

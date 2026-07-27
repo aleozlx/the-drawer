@@ -196,14 +196,25 @@ test("a tombstoned entry leaves the UI surfaces but stays in the backup", async 
 
 test("import_entry is absent unless the server enables it", async () => {
   const d = await fresh();
-  const res = await d.call("import_entry", {
-    id: "e_mnjzu6v5zzzz",
-    title: "T",
-    body: "B",
-    date: "2026-01-01",
-  });
-  assert.equal(res.error, "import_rejected");
-  assert.match(res.message, /DRAWER_ALLOW_IMPORT/);
+  // Absence, not a polite refusal: a restore path that is always advertised only
+  // reveals the missing config at the moment someone attempts a restore.
+  assert.ok(!d.toolNames().includes("import_entry"), "not registered");
+  await assert.rejects(
+    () => d.call("import_entry", { id: "e_mnjzu6v5zzzz", title: "T", body: "B", date: "2026-01-01" }),
+    /No tool "import_entry"/
+  );
+});
+
+test("import_entry appears once the server enables it", async () => {
+  const d = await fresh({ allowImport: true });
+  assert.ok(d.toolNames().includes("import_entry"), "registered");
+});
+
+test("the read surface is identical whether or not import is enabled", async () => {
+  const off = await fresh();
+  const on = await fresh({ allowImport: true });
+  const readTools = (d) => d.toolNames().filter((n) => n !== "import_entry").sort();
+  assert.deepEqual(readTools(off), readTools(on));
 });
 
 test("import_entry refuses an id that is not the server's own grammar", async () => {
