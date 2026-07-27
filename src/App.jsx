@@ -5,13 +5,11 @@ const STORAGE_KEY = "claude-drawer:entries";
 const EMPTY_STATE = { entries: {}, order: [] };
 
 // ─── Storage helpers ───
+// Deliberately throws rather than falling back to EMPTY_STATE. A failed read that
+// looks like an empty drawer is how you overwrite the whole store with nothing.
 async function load() {
-  try {
-    const res = await window.storage.get(STORAGE_KEY);
-    return res ? JSON.parse(res.value) : EMPTY_STATE;
-  } catch {
-    return EMPTY_STATE;
-  }
+  const res = await window.storage.get(STORAGE_KEY);
+  return res ? JSON.parse(res.value) : EMPTY_STATE;
 }
 
 async function save(data) {
@@ -277,59 +275,86 @@ export default function Notebook() {
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [status, setStatus] = useState(null);
 
   useEffect(() => {
     load().then(d => {
       setData(d);
       setLoading(false);
+    }).catch(() => {
+      setLoadError(true);
+      setLoading(false);
     });
   }, []);
 
-  const persist = useCallback(async (newData) => {
-    setData(newData);
-    const ok = await save(newData);
-    if (!ok) {
+  // Takes a mutator, not a finished state. The drawer is also written by the MCP
+  // server, so this tab's copy goes stale the moment it loads; applying the change to
+  // freshly-read data is what keeps a UI edit from clobbering entries filed since.
+  const persist = useCallback(async (mutate) => {
+    let next;
+    try {
+      next = mutate(await load());
+    } catch {
+      setStatus("Could not re-read the drawer — write aborted");
+      setTimeout(() => setStatus(null), 4000);
+      return;
+    }
+    const ok = await save(next);
+    if (ok) {
+      setData(next);
+    } else {
       setStatus("Storage write failed");
       setTimeout(() => setStatus(null), 3000);
     }
   }, []);
 
   function handleImport(entries) {
-    const newData = { ...data, entries: { ...data.entries }, order: [...data.order] };
-    let lastId = null;
-    for (const e of entries) {
-      const id = generateId();
-      newData.entries[id] = {
-        id,
-        title: e.title,
-        body: e.body,
-        date: e.date || new Date().toISOString().slice(0, 10),
-        tags: e.tags || [],
-        origin: e.origin || null,
-      };
-      newData.order.unshift(id);
-      lastId = id;
-    }
-    persist(newData);
-    setSelectedId(lastId);
+    const now = new Date().toISOString();
+    // Ids are minted once, outside the mutator, so a retry cannot mint different ones.
+    const made = entries.map(e => ({
+      id: generateId(),
+      title: e.title,
+      body: e.body,
+      date: e.date || now.slice(0, 10),
+      tags: e.tags || [],
+      origin: e.origin || null,
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    }));
+    persist(d => ({
+      ...d,
+      entries: { ...d.entries, ...Object.fromEntries(made.map(e => [e.id, e])) },
+      order: [...made.map(e => e.id).reverse(), ...d.order],
+      revision: (d.revision || 0) + 1,
+    }));
+    setSelectedId(made.length ? made[made.length - 1].id : null);
     setShowImport(false);
     setStatus(`Imported ${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
     setTimeout(() => setStatus(null), 2500);
   }
 
+  // Soft delete. Drawer entries are ideas neither participant brought in — they cannot
+  // be rewritten from memory, so a hard delete here is unrecoverable. The tombstone
+  // also lets a backup tell "deleted" apart from "never seen".
   function handleDelete(id) {
-    const newData = {
-      entries: { ...data.entries },
-      order: data.order.filter(x => x !== id),
-    };
-    delete newData.entries[id];
-    persist(newData);
+    const ts = new Date().toISOString();
+    persist(d => d.entries[id]
+      ? {
+          ...d,
+          entries: { ...d.entries, [id]: { ...d.entries[id], deleted_at: ts, updated_at: ts } },
+          revision: (d.revision || 0) + 1,
+        }
+      : d);
     setSelectedId(null);
   }
 
+  // Tombstoned entries stay in the store for the backup but are not shown.
+  const liveOrder = data.order.filter(id => data.entries[id] && !data.entries[id].deleted_at);
+
   // Filter entries
-  const filtered = data.order.filter(id => {
+  const filtered = liveOrder.filter(id => {
     if (!search.trim()) return true;
     const e = data.entries[id];
     const q = search.toLowerCase();
@@ -341,7 +366,7 @@ export default function Notebook() {
     );
   });
 
-  const allTags = [...new Set(data.order.flatMap(id => data.entries[id]?.tags || []))].sort();
+  const allTags = [...new Set(liveOrder.flatMap(id => data.entries[id]?.tags || []))].sort();
 
   if (loading) {
     return (
@@ -351,6 +376,22 @@ export default function Notebook() {
         color: "#484f58", fontFamily: "'JetBrains Mono', monospace",
         fontSize: "13px",
       }}>Loading drawer&hellip;</div>
+    );
+  }
+
+  // Read-only bail-out. Rendering an empty drawer here would invite an edit that
+  // overwrites the real one.
+  if (loadError) {
+    return (
+      <div style={{
+        height: "100vh", display: "flex", alignItems: "center",
+        justifyContent: "center", background: "#010409",
+        color: "#f85149", fontFamily: "'JetBrains Mono', monospace",
+        fontSize: "13px", textAlign: "center", padding: "24px",
+      }}>
+        Could not read the drawer. Reload once storage is reachable &mdash;
+        editing now would risk overwriting it.
+      </div>
     );
   }
 
@@ -379,7 +420,7 @@ export default function Notebook() {
               <span style={{
                 fontSize: "11px", color: "#484f58",
                 fontFamily: "'JetBrains Mono', monospace",
-              }}>{data.order.length} keys</span>
+              }}>{liveOrder.length} keys</span>
             </div>
             <div style={{ marginTop: "10px", display: "flex", gap: "6px" }}>
               <input
@@ -432,7 +473,7 @@ export default function Notebook() {
                 fontFamily: "'JetBrains Mono', monospace",
                 fontStyle: "italic",
               }}>
-                {data.order.length === 0 ? "No keys yet. Import one." : "No matches."}
+                {liveOrder.length === 0 ? "No keys yet. Import one." : "No matches."}
               </div>
             ) : (
               filtered.map(id => (
@@ -449,7 +490,7 @@ export default function Notebook() {
 
         {/* Main content */}
         <EntryView
-          entry={selectedId ? data.entries[selectedId] : null}
+          entry={selectedId && !data.entries[selectedId]?.deleted_at ? data.entries[selectedId] : null}
           onDelete={handleDelete}
         />
 
