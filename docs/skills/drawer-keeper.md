@@ -41,7 +41,7 @@ Use the `The Drawer:add_entry` tool with these conventions:
 ### Tags
 - Use lowercase, hyphenated. Aim for 2-4 tags.
 - Prefer conceptual tags over domain tags: `emergence`, `topology`, `self-reference`, `compression`, `alignment` over `physics-chat`, `tuesday-discussion`.
-- Reuse existing tags when they fit. Check what's already in the drawer if uncertain.
+- Reuse existing tags when they fit. `The Drawer:list_entries` shows what's already in use.
 
 ### Origin
 - Brief breadcrumb: what collision produced this. Format: `topic A → topic B → the spark`
@@ -57,6 +57,15 @@ Use the `The Drawer:add_entry` tool with these conventions:
 ## Retrieval and Composting
 
 At the **start** of deep exploratory conversations (physics, philosophy, creative worldbuilding, AI architecture), consider searching the drawer for related entries. Old keys can unlock new doors — that's the whole point. But don't force-inject drawer entries. Let them surface naturally if the conversation's trajectory passes through their neighborhood.
+
+### The key ring
+
+- `The Drawer:list_entries` — cheap enumeration: id, title, date, tags, origin. No bodies. Origin is the best single field for judging whether an old key fits the current door.
+- `The Drawer:search_entries` — keyword search over titles, bodies, tags, and origins. Full records back.
+- `The Drawer:get_entry` — one entry by id, full body included. When you already know the id, ask for it by name — don't keyword-search for something you can already name.
+- `The Drawer:export_entries` — the backup surface. It exists for the weekly backup routine, not for conversation; you should never need it here.
+
+Entry ids are stable and safe to mention in notes or memory — `get_entry` will still resolve them later.
 
 Think of drawer entries as **compost** — they decompose into the soil of future reasoning. You don't plant last year's tomato. You grow a new one in richer earth.
 
